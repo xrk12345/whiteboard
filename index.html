@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>图片评论墙</title>
+    <title>专属背景图片评论白板</title>
     <style>
         /* 基础样式重置 */
         * {
@@ -14,273 +14,266 @@
         }
 
         body {
-            background-color: #f0f2f5;
-            color: #1c1e21;
-            padding: 20px;
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* 禁止全身滚动 */
+            background-color: #000;
         }
 
-        /* 主容器 */
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        /* 1. 背景图片容器 - 占满全屏 */
+        .background-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1; /* 放在最底层 */
             overflow: hidden;
         }
 
-        /* 图片展示区 */
-        .image-container {
+        #background-image {
             width: 100%;
-            height: 400px;
-            background-color: #f7f7f7;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-bottom: 1px solid #e0e0e0;
-            position: relative;
+            height: 100%;
+            object-fit: contain; /* 保持比例，全屏显示 */
+            display: block;
         }
 
-        #main-image {
-            max-width: 100%;
-            max-height: 100%;
-            object-fit: contain;
-        }
-
-        .upload-hint {
-            color: #606770;
-            text-align: center;
-            padding: 20px;
-        }
-
-        /* 评论区 */
-        .comments-section {
-            padding: 25px;
-        }
-
-        .comments-section h2 {
-            margin-bottom: 20px;
-            font-size: 20px;
-            color: #333;
-        }
-
-        /* 评论输入框 */
-        .comment-input-container {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 25px;
-        }
-
-        #comment-input {
-            flex: 1;
-            padding: 12px 15px;
-            border: 1px solid #ccd0d5;
-            border-radius: 8px;
-            font-size: 14px;
-            resize: none;
-            height: 60px;
-        }
-
-        #comment-input:focus {
-            outline: none;
-            border-color: #1677ff;
-            box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.2);
-        }
-
-        #submit-comment {
-            background-color: #1677ff;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 0 20px;
-            font-weight: 600;
+        /* 2. 遮罩层：只有管理员能触发上传，其他人是透明不可点击 */
+        .upload-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 2; /* 图片之上 */
             cursor: pointer;
-            transition: background-color 0.2s;
+            /* 这里默认是透明的，如果想让管理员有提示，可以加个半透明提示 */
         }
-
-        #submit-comment:hover {
-            background-color: #0958d9;
-        }
-
-        /* 评论列表 */
-        .comments-list {
-            display: flex;
-            flex-direction: column;
-            gap: 15px;
-        }
-
-        .comment-item {
-            padding: 15px;
-            background-color: #f7f8fa;
-            border-radius: 8px;
-            border-left: 3px solid #1677ff;
-        }
-
-        .comment-text {
-            font-size: 14px;
-            line-height: 1.5;
-            margin-bottom: 5px;
-        }
-
-        .comment-time {
-            font-size: 12px;
-            color: #606770;
-            text-align: right;
-        }
-
-        /* 上传按钮 */
-        .upload-btn-wrapper {
+        
+        /* 管理员提示：只有管理员hover时才显示 */
+        .upload-overlay:hover::after {
+            content: "点击图片更换背景";
             position: absolute;
-            bottom: 20px;
+            top: 20px;
             right: 20px;
+            background: rgba(0,0,0,0.5);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 12px;
+            pointer-events: none; /* 不阻挡点击 */
         }
 
+        /* 隐藏真实的文件上传框 */
         #image-upload {
             display: none;
         }
 
-        .upload-label {
-            background-color: rgba(255, 255, 255, 0.8);
-            border: 1px solid #ccd0d5;
-            padding: 8px 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 500;
-            color: #1c1e21;
-            transition: all 0.2s;
+        /* 3. 评论区：半透明毛玻璃效果，悬浮在右下角 */
+        .comments-panel {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            width: 350px;
+            max-height: 70vh; /* 最大高度，不超出屏幕 */
+            z-index: 3; /* 最高层级 */
+            
+            /* 毛玻璃效果核心代码 */
+            background: rgba(255, 255, 255, 0.15); /* 极浅的白色透明 */
+            backdrop-filter: blur(10px); /* 模糊背景 */
+            -webkit-backdrop-filter: blur(10px); /* 兼容Safari */
+            
+            border-radius: 16px;
+            border: 1px solid rgba(0, 0, 0, 0.1); /* 极细的黑色边框 */
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
         }
 
-        .upload-label:hover {
-            background-color: #f0f2f5;
+        .comments-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+            font-weight: 600;
+            color: #000;
+            text-align: center;
+        }
+
+        /* 评论输入框 */
+        .comment-input-container {
+            padding: 15px;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+        }
+
+        #comment-input {
+            width: 100%;
+            padding: 12px 15px;
+            border: 1px solid rgba(0, 0, 0, 0.2); /* 黑色细边框 */
+            border-radius: 12px;
+            font-size: 14px;
+            resize: none;
+            height: 60px;
+            background: rgba(255, 255, 255, 0.5);
+            color: #000;
+        }
+
+        #comment-input:focus {
+            outline: none;
+            border-color: #000;
+        }
+
+        #submit-comment {
+            margin-top: 10px;
+            width: 100%;
+            background-color: #000;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 10px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        #submit-comment:hover {
+            background-color: #333;
+        }
+
+        /* 评论列表 */
+        .comments-list {
+            flex: 1;
+            padding: 10px 15px;
+            overflow-y: auto; /* 超过高度滚动 */
+            display: flex;
+            flex-direction: column-reverse; /* 最新评论在最下面 */
+            gap: 10px;
+        }
+
+        .comment-item {
+            padding: 10px 15px;
+            background: rgba(255, 255, 255, 0.4);
+            border: 1px solid rgba(0, 0, 0, 0.15);
+            border-radius: 12px;
+            font-size: 13px;
+            color: #000;
+            line-height: 1.4;
+        }
+
+        .comment-time {
+            font-size: 11px;
+            color: #333;
+            text-align: right;
+            margin-top: 5px;
         }
     </style>
 </head>
 <body>
 
-<div class="container">
-    <!-- 图片展示区域 -->
-    <div class="image-container">
-        < img id="main-image" src="https://picsum.photos/800/400" alt="展示图片">
-        <div class="upload-btn-wrapper">
-            <label for="image-upload" class="upload-label">更换图片</label>
-            <input type="file" id="image-upload" accept="image/*">
-        </div>
-        <div class="upload-hint" id="upload-hint">点击右下角更换图片</div>
+    <!-- 1. 背景图片层 -->
+    <div class="background-container">
+        < img id="background-image" src="https://picsum.photos/1920/1080" alt="背景图">
     </div>
 
-    <!-- 评论区域 -->
-    <div class="comments-section">
-        <h2>评论区</h2>
+    <!-- 2. 管理员上传遮罩层 -->
+    <input type="file" id="image-upload" accept="image/*">
+    <div class="upload-overlay" id="upload-overlay"></div>
+
+    <!-- 3. 评论面板 -->
+    <div class="comments-panel">
+        <div class="comments-header">
+            评论区
+        </div>
         <div class="comment-input-container">
             <textarea id="comment-input" placeholder="写下你的评论..."></textarea>
-            <button id="submit-comment">发布</button>
+            <button id="submit-comment">发布评论</button>
         </div>
-
-        <!-- 评论列表 -->
         <div class="comments-list" id="comments-list">
-            <!-- 评论会通过 JS 动态添加在这里 -->
-            <div class="comment-item">
-                <p class="comment-text">欢迎使用！这是一个默认评论，所有人都可以发布新评论哦~</p >
-                <p class="comment-time">系统时间</p >
-            </div>
+            <!-- 评论动态加载 -->
         </div>
     </div>
-</div>
 
 <script>
-    // 1. 图片上传功能
+    // ========== 功能模块 1：背景图管理 (仅管理员可用) ==========
     const imageUpload = document.getElementById('image-upload');
-    const mainImage = document.getElementById('main-image');
-    const uploadHint = document.getElementById('upload-hint');
+    const backgroundImage = document.getElementById('background-image');
+    const uploadOverlay = document.getElementById('upload-overlay');
 
+    // 点击遮罩层触发文件上传 (仅管理员)
+    uploadOverlay.addEventListener('click', () => {
+        imageUpload.click();
+    });
+
+    // 监听图片上传
     imageUpload.addEventListener('change', (e) => {
         const file = e.target.files[0];
         if (file) {
             const reader = new FileReader();
             reader.onload = (event) => {
-                mainImage.src = event.target.result;
-                uploadHint.textContent = '图片已更新';
-                uploadHint.style.color = '#1677ff';
-                // 3秒后恢复提示文字
-                setTimeout(() => {
-                    uploadHint.textContent = '点击右下角更换图片';
-                    uploadHint.style.color = '#606770';
-                }, 3000);
+                backgroundImage.src = event.target.result;
+                // 清除上传记录，允许重复上传同一文件
+                e.target.value = ''; 
             };
             reader.readAsDataURL(file);
         }
     });
 
-    // 2. 评论功能
+    // ========== 功能模块 2：评论功能 (全员可用) ==========
     const commentInput = document.getElementById('comment-input');
     const submitComment = document.getElementById('submit-comment');
     const commentsList = document.getElementById('comments-list');
 
-    // 加载本地存储的评论
+    // 加载历史评论
     loadComments();
 
     // 发布评论
-    submitComment.addEventListener('click', () => {
-        const text = commentInput.value.trim();
-        if (!text) {
-            alert('请输入评论内容！');
-            return;
-        }
-
-        // 创建评论对象
-        const comment = {
-            id: Date.now(), // 用时间戳作为唯一ID
-            text: text,
-            time: new Date().toLocaleString() // 获取当前本地时间
-        };
-
-        // 保存到本地存储
-        saveComment(comment);
-
-        // 在页面添加评论
-        addCommentToDOM(comment);
-
-        // 清空输入框
-        commentInput.value = '';
-    });
-
-    // 按 Enter 键发布评论
+    submitComment.addEventListener('click', postComment);
+    
+    // 支持 Enter 发布
     commentInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault(); // 阻止默认换行
-            submitComment.click();
+            e.preventDefault();
+            postComment();
         }
     });
 
-    // 保存评论到 localStorage (本地浏览器存储)
+    function postComment() {
+        const text = commentInput.value.trim();
+        if (!text) return;
+
+        const comment = {
+            id: Date.now(),
+            text: text,
+            time: new Date().toLocaleString()
+        };
+
+        saveComment(comment);
+        addCommentToDOM(comment);
+        commentInput.value = '';
+    }
+
+    // 保存到本地存储
     function saveComment(comment) {
-        let comments = JSON.parse(localStorage.getItem('imageComments')) || [];
+        let comments = JSON.parse(localStorage.getItem('whiteboardComments')) || [];
         comments.push(comment);
-        localStorage.setItem('imageComments', JSON.stringify(comments));
+        localStorage.setItem('whiteboardComments', JSON.stringify(comments));
     }
 
-    // 从 localStorage 加载评论
+    // 加载评论
     function loadComments() {
-        const comments = JSON.parse(localStorage.getItem('imageComments')) || [];
-        // 清空默认评论
-        commentsList.innerHTML = '';
-        // 加载所有保存的评论
-        comments.forEach(comment => {
-            addCommentToDOM(comment);
-        });
+        const comments = JSON.parse(localStorage.getItem('whiteboardComments')) || [];
+        comments.forEach(comment => addCommentToDOM(comment));
     }
 
-    // 将评论添加到 DOM 中
+    // 添加评论到DOM
     function addCommentToDOM(comment) {
-        const commentItem = document.createElement('div');
-        commentItem.className = 'comment-item';
-        commentItem.innerHTML = `
-            <p class="comment-text">${comment.text}</p >
-            <p class="comment-time">${comment.time}</p >
+        const div = document.createElement('div');
+        div.className = 'comment-item';
+        div.innerHTML = `
+            <div class="comment-text">${comment.text}</div>
+            <div class="comment-time">${comment.time}</div>
         `;
-        // 添加到列表顶部（最新的评论在最上面）
-        commentsList.insertBefore(commentItem, commentsList.firstChild);
+        commentsList.appendChild(div);
+        // 滚动到最新评论
+        commentsList.scrollTop = commentsList.scrollHeight;
     }
 </script>
 
