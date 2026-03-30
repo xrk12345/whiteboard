@@ -2,63 +2,626 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>白板</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>全屏背景 · 透明评论区</title>
+    <!-- 引入 Firebase SDK (模块化方式) -->
+    <script type="module">
+        // ============================================================
+        // 配置说明：
+        // 1. 背景图片：请将您的全屏图片命名为 "background.jpg" 并放在与本文件相同目录下，
+        //    或者修改下方 body 样式中的 background-image 路径。
+        // 2. 评论系统使用 Firebase 实时数据库，真正实现“大家可以评论”（跨用户、持久化）。
+        //    请按以下步骤获取您的 Firebase 配置：
+        //       a) 前往 https://console.firebase.google.com/ 创建项目
+        //       b) 添加 Web 应用，复制初始化配置对象 (apiKey, authDomain, databaseURL 等)
+        //       c) 在“Authentication”中开启“匿名登录”功能
+        //       d) 在“Realtime Database”中创建数据库，并设置规则为：
+        //          {
+        //            "rules": {
+        //              ".read": true,
+        //              ".write": true
+        //            }
+        //          }
+        //          （注意：生产环境可限制更严，此处为演示方便开放读写）
+        //       e) 将下方 firebaseConfig 替换为您自己的配置
+        // 3. 如果暂时没有 Firebase 配置，评论区会显示友好的引导提示，样式依然优雅。
+        // ============================================================
+        
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+        import { getDatabase, ref, push, onChildAdded, query, limitToLast, orderByChild } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
+        import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
+
+        // ---------- 🔧 请替换为您自己的 Firebase 配置 ----------
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",            // 替换为您的 apiKey
+            authDomain: "YOUR_AUTH_DOMAIN",    // 替换为您的 authDomain
+            databaseURL: "YOUR_DATABASE_URL",  // 替换为您的 databaseURL (例如: https://xxxxx.firebaseio.com)
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_STORAGE_BUCKET",
+            messagingSenderId: "YOUR_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+        // --------------------------------------------------------
+
+        // 全局变量
+        let db, auth, commentsRef;
+        let isFirebaseReady = false;
+        let currentUser = null;
+
+        // DOM 元素
+        const commentsListEl = document.getElementById('commentsList');
+        const commentForm = document.getElementById('commentForm');
+        const nicknameInput = document.getElementById('nicknameInput');
+        const contentInput = document.getElementById('contentInput');
+        const submitBtn = document.getElementById('submitCommentBtn');
+        const loginStatusEl = document.getElementById('loginStatus');
+        const configWarningEl = document.getElementById('configWarning');
+
+        // 检查配置是否有效 (简单判断 apiKey 是否还是占位符)
+        const isConfigValid = () => {
+            return firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY";
+        };
+
+        // 显示加载或错误状态
+        function setStatusMessage(msg, isError = false) {
+            if (loginStatusEl) {
+                loginStatusEl.textContent = msg;
+                loginStatusEl.style.color = isError ? "#ff6b6b" : "rgba(0,0,0,0.7)";
+                loginStatusEl.style.backgroundColor = "rgba(255,255,240,0.7)";
+            }
+        }
+
+        // 渲染单条评论（纯文本安全）
+        function renderComment(commentData, commentId) {
+            const { nickname, content, timestamp } = commentData;
+            const timeStr = timestamp ? new Date(timestamp).toLocaleString() : "刚刚";
+            const safeNickname = escapeHtml(nickname) || "匿名用户";
+            const safeContent = escapeHtml(content);
+            
+            const commentDiv = document.createElement('div');
+            commentDiv.className = 'comment-item';
+            commentDiv.setAttribute('data-id', commentId);
+            commentDiv.innerHTML = `
+                <div class="comment-header">
+                    <span class="comment-nickname">${safeNickname}</span>
+                    <span class="comment-time">${timeStr}</span>
+                </div>
+                <div class="comment-content">${safeContent}</div>
+            `;
+            commentsListEl.appendChild(commentDiv);
+            // 自动滚动到底部
+            commentsListEl.scrollTop = commentsListEl.scrollHeight;
+        }
+
+        // 简单的防XSS函数
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/[&<>]/g, function(m) {
+                if (m === '&') return '&amp;';
+                if (m === '<') return '&lt;';
+                if (m === '>') return '&gt;';
+                return m;
+            }).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, function(c) {
+                return c;
+            });
+        }
+
+        // 加载历史评论 (监听新增)
+        function loadComments() {
+            if (!db || !commentsRef) return;
+            // 清空现有列表，避免重复 (但为了实时性，先清空再监听，但 onChildAdded 会触发所有)
+            // 最佳实践：清空列表，然后 onChildAdded 会重新填充全部
+            commentsListEl.innerHTML = '';
+            // 获取最近100条，按时间正序
+            const limitedQuery = query(commentsRef, orderByChild('timestamp'), limitToLast(100));
+            onChildAdded(limitedQuery, (snapshot) => {
+                const comment = snapshot.val();
+                const key = snapshot.key;
+                if (comment && comment.content) {
+                    renderComment(comment, key);
+                }
+            });
+        }
+
+        // 提交评论
+        async function submitComment(e) {
+            e.preventDefault();
+            if (!isFirebaseReady || !db || !commentsRef) {
+                setStatusMessage("评论系统未就绪，请检查配置或网络", true);
+                return;
+            }
+            if (!currentUser) {
+                setStatusMessage("正在登录中，请稍后再试...", true);
+                return;
+            }
+            let nickname = nicknameInput.value.trim();
+            const content = contentInput.value.trim();
+            if (!content) {
+                alert("评论内容不能为空~");
+                return;
+            }
+            if (!nickname) {
+                nickname = "匿名旅人";
+            }
+            if (nickname.length > 20) nickname = nickname.slice(0,20);
+            if (content.length > 500) {
+                alert("内容太长啦，不超过500字哦");
+                return;
+            }
+            
+            submitBtn.disabled = true;
+            submitBtn.textContent = "发布中...";
+            
+            try {
+                const newComment = {
+                    nickname: nickname,
+                    content: content,
+                    timestamp: Date.now(),
+                    userId: currentUser.uid
+                };
+                await push(commentsRef, newComment);
+                // 清空输入框
+                contentInput.value = "";
+                nicknameInput.value = nickname; // 保留昵称方便下次
+                setStatusMessage("评论发布成功！", false);
+            } catch (error) {
+                console.error("提交评论失败:", error);
+                setStatusMessage("发布失败，请检查网络或数据库权限", true);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = "发布评论 →";
+            }
+        }
+
+        // 初始化Firebase并启动匿名登录
+        function initFirebase() {
+            if (!isConfigValid()) {
+                configWarningEl.style.display = 'block';
+                setStatusMessage("⚠️ 未配置 Firebase，评论数据不会保存。请按页面顶部说明替换 firebaseConfig。", true);
+                isFirebaseReady = false;
+                submitBtn.disabled = true;
+                return;
+            }
+            configWarningEl.style.display = 'none';
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getDatabase(app);
+                auth = getAuth(app);
+                commentsRef = ref(db, 'comments');
+                
+                // 匿名登录
+                setStatusMessage("正在连接评论服务...", false);
+                signInAnonymously(auth)
+                    .then((userCredential) => {
+                        currentUser = userCredential.user;
+                        setStatusMessage("✅ 已连接，可自由评论", false);
+                        isFirebaseReady = true;
+                        submitBtn.disabled = false;
+                        // 加载评论列表
+                        loadComments();
+                    })
+                    .catch((error) => {
+                        console.error("匿名登录失败:", error);
+                        let errMsg = "评论登录失败，请检查 Firebase 认证是否开启匿名登录。";
+                        if (error.code === 'auth/operation-not-allowed') {
+                            errMsg = "❌ Firebase 匿名登录未开启，请在控制台 Authentication 中启用匿名登录。";
+                        }
+                        setStatusMessage(errMsg, true);
+                        isFirebaseReady = false;
+                        submitBtn.disabled = true;
+                        configWarningEl.style.display = 'block';
+                        configWarningEl.innerHTML = `<strong>⚠️ Firebase 配置错误：</strong> ${errMsg} 请检查项目设置。`;
+                    });
+                
+                // 监听登录状态变化
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        currentUser = user;
+                        if (isFirebaseReady) setStatusMessage("✅ 在线 · 随时发言", false);
+                    } else {
+                        currentUser = null;
+                        setStatusMessage("未登录，无法评论", true);
+                    }
+                });
+            } catch (err) {
+                console.error("初始化Firebase失败:", err);
+                configWarningEl.style.display = 'block';
+                configWarningEl.innerHTML = `<strong>🔥 Firebase 初始化错误：</strong> ${err.message} 请检查配置是否正确。`;
+                setStatusMessage("评论系统初始化失败", true);
+                submitBtn.disabled = true;
+            }
+        }
+
+        // 页面启动
+        window.addEventListener('DOMContentLoaded', () => {
+            // 如果配置无效，显示警告但保留UI美观；若有效则启动firebase
+            initFirebase();
+            // 绑定提交事件
+            if (commentForm) {
+                commentForm.addEventListener('submit', submitComment);
+            }
+        });
+    </script>
     <style>
-        body {
+        * {
             margin: 0;
             padding: 0;
-            background: #000;
-            overflow: hidden;
+            box-sizing: border-box;
         }
-        /* 背景图 */
-        #bg {
+
+        /* 全屏背景图片：由你上传，其他人无法更改图片本身 */
+        body {
+            /* 🔽 请将你的图片命名为 'background.jpg' 放在同目录，或修改下方路径 */
+            background-image: url('background.jpg');
+            background-size: cover;
+            background-position: center center;
+            background-attachment: fixed;
+            background-repeat: no-repeat;
+            font-family: 'Segoe UI', 'Roboto', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem 1.5rem;
+            position: relative;
+        }
+
+        /* 为了提升文字可读性，增加一层极淡的柔光层（可选，不破坏透明感） */
+        body::before {
+            content: '';
             position: fixed;
             top: 0;
             left: 0;
-            width: 100vw;
-            height: 100vh;
-            object-fit: cover;
-        }
-        /* 评论区 */
-        .comment-area {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            width: 300px;
-            background: rgba(255,255,255,0.3);
-            padding: 15px;
-            border-radius: 10px;
-            z-index: 10;
-        }
-        textarea {
             width: 100%;
-            height: 60px;
-            margin-bottom: 10px;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.2);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        /* 评论区主容器：透明 + 只有黑色线条边框 */
+        .comment-section {
+            position: relative;
+            z-index: 2;
+            width: 100%;
+            max-width: 720px;
+            background: transparent;     /* 完全透明背景 */
+            border: 2px solid #000000;   /* 纯黑色线条边框 */
+            border-radius: 28px;
+            backdrop-filter: blur(0px);
+            box-shadow: 0 20px 35px -12px rgba(0, 0, 0, 0.25);
+            transition: all 0.2s ease;
+            overflow: hidden;
+        }
+
+        /* 头部标题区：延续透明风格，黑色细线点缀 */
+        .comment-header-bar {
+            padding: 1.25rem 1.8rem;
+            border-bottom: 1px solid rgba(0, 0, 0, 0.3);
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(4px);
+        }
+        .comment-header-bar h2 {
+            font-size: 1.6rem;
+            font-weight: 600;
+            letter-spacing: -0.3px;
+            color: #111;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .comment-header-bar h2:before {
+            content: '💬';
+            font-size: 1.6rem;
+            font-weight: normal;
+        }
+        .sub {
+            font-size: 0.75rem;
+            color: #2c2c2c;
+            margin-top: 6px;
+            opacity: 0.7;
+            font-weight: 400;
+        }
+
+        /* 评论列表区域: 透明底，滚动条极细 */
+        .comments-list {
+            padding: 1rem 1.5rem;
+            max-height: 420px;
+            overflow-y: auto;
+            background: rgba(255, 255, 255, 0.25);
+            backdrop-filter: blur(3px);
+            scroll-behavior: smooth;
+        }
+        /* 自定义滚动条 (黑线风格) */
+        .comments-list::-webkit-scrollbar {
+            width: 5px;
+        }
+        .comments-list::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.1);
+            border-radius: 10px;
+        }
+        .comments-list::-webkit-scrollbar-thumb {
+            background: #000;
+            border-radius: 10px;
+        }
+
+        /* 单条评论卡片: 半透明白色底，确保文字清晰，同时保持透明感 */
+        .comment-item {
+            background: rgba(255, 255, 255, 0.65);
+            backdrop-filter: blur(2px);
+            border-left: 3px solid #000000;
+            border-radius: 16px;
+            padding: 0.9rem 1.2rem;
+            margin-bottom: 1rem;
+            transition: transform 0.1s ease, background 0.2s;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        }
+        .comment-item:hover {
+            background: rgba(255, 255, 255, 0.85);
+        }
+        .comment-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .comment-nickname {
+            font-weight: 700;
+            color: #000;
+            font-size: 0.9rem;
+            background: rgba(0,0,0,0.05);
+            padding: 0.1rem 0.5rem;
+            border-radius: 30px;
+            letter-spacing: 0.3px;
+        }
+        .comment-time {
+            font-size: 0.7rem;
+            color: #3a3a3a;
+            font-family: monospace;
+            opacity: 0.7;
+        }
+        .comment-content {
+            font-size: 0.95rem;
+            line-height: 1.45;
+            color: #111;
+            word-break: break-word;
+            white-space: pre-wrap;
+        }
+
+        /* 发表评论表单区: 透明边框，黑色线条感 */
+        .comment-form-area {
+            padding: 1.2rem 1.8rem 1.8rem;
+            border-top: 1px solid rgba(0, 0, 0, 0.3);
+            background: rgba(240, 240, 240, 0.2);
+            backdrop-filter: blur(4px);
+        }
+        .input-group {
+            margin-bottom: 1rem;
+        }
+        .input-group input, .input-group textarea {
+            width: 100%;
+            background: rgba(255, 255, 255, 0.7);
+            border: 1.5px solid #000000;
+            border-radius: 24px;
+            padding: 0.7rem 1.2rem;
+            font-size: 0.9rem;
+            font-family: inherit;
+            outline: none;
+            transition: all 0.2s;
+            color: #000;
+            font-weight: 500;
+        }
+        .input-group input:focus, .input-group textarea:focus {
+            background: rgba(255, 255, 255, 0.95);
+            border-color: #000;
+            box-shadow: 0 0 0 2px rgba(0,0,0,0.2);
+        }
+        .input-group textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+        .row-flex {
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
+            flex-wrap: wrap;
+        }
+        .row-flex .input-group:first-child {
+            flex: 2;
+        }
+        .row-flex .input-group:last-child {
+            flex: 3;
         }
         button {
-            width: 100%;
-            padding: 8px;
-            background: #000;
-            color: #fff;
+            background: #000000;
             border: none;
-            border-radius: 5px;
+            color: white;
+            font-weight: 600;
+            padding: 0.7rem 1.8rem;
+            border-radius: 40px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: 0.2s;
+            margin-top: 8px;
+            width: 100%;
+            letter-spacing: 1px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        button:hover {
+            background: #333;
+            transform: scale(0.98);
+        }
+        button:disabled {
+            background: #5a5a5a;
+            cursor: not-allowed;
+            opacity: 0.6;
+            transform: none;
+        }
+        .status-badge {
+            font-size: 0.75rem;
+            text-align: center;
+            margin-top: 12px;
+            padding: 6px 10px;
+            border-radius: 40px;
+            background: rgba(255,255,220,0.8);
+            display: inline-block;
+            width: auto;
+            backdrop-filter: blur(2px);
+        }
+        .warning-box {
+            background: rgba(0,0,0,0.7);
+            backdrop-filter: blur(8px);
+            color: #ffd966;
+            padding: 12px 18px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            margin: 0 1.2rem 1rem 1.2rem;
+            border-left: 4px solid #ffaa33;
+            font-family: monospace;
+        }
+        .footer-tip {
+            text-align: center;
+            font-size: 0.7rem;
+            color: #1f1f1f;
+            padding: 0.8rem;
+            border-top: 1px dashed rgba(0,0,0,0.2);
+            background: rgba(255,255,245,0.3);
+            backdrop-filter: blur(2px);
+        }
+
+        /* 移动端适配 */
+        @media (max-width: 600px) {
+            body {
+                padding: 1rem;
+            }
+            .comment-section {
+                border-radius: 20px;
+            }
+            .comments-list {
+                max-height: 360px;
+                padding: 0.8rem 1rem;
+            }
+            .comment-form-area {
+                padding: 1rem 1.2rem 1.5rem;
+            }
+            .row-flex {
+                flex-direction: column;
+                gap: 8px;
+            }
+            .comment-header-bar h2 {
+                font-size: 1.3rem;
+            }
+        }
+
+        /* 空白评论占位优雅提示 */
+        .empty-comments {
+            text-align: center;
+            padding: 2rem;
+            color: #222;
+            font-weight: 500;
+            background: rgba(255,255,240,0.5);
+            border-radius: 32px;
+            font-size: 0.9rem;
+            backdrop-filter: blur(2px);
         }
     </style>
 </head>
 <body>
-    < img id="bg" src="https://picsum.photos/id/237/1920/1080" alt="背景">
-    <div class="comment-area">
-        <textarea placeholder="写评论..."></textarea>
-        <button onclick="send()">发布</button>
+<div class="comment-section">
+    <div class="comment-header-bar">
+        <h2>边界漫谈 · 回响</h2>
+        <div class="sub">透明留白 · 黑色线条记录真实声音</div>
     </div>
 
-    <script>
-        function send() {
-            const text = document.querySelector('textarea').value.trim();
-            if (!text) return;
-            alert('评论发布成功：' + text);
-            document.querySelector('textarea').value = '';
+    <!-- 评论列表容器 -->
+    <div id="commentsList" class="comments-list">
+        <div class="empty-comments" style="display: flex; justify-content: center; align-items: center;">
+            ✨ 加载评论中，片刻即现...
+        </div>
+    </div>
+
+    <!-- 警告/配置引导区 (默认隐藏) -->
+    <div id="configWarning" class="warning-box" style="display: none;">
+        💡 提示：评论系统需要配置 Firebase。请查看代码顶部注释，替换 firebaseConfig 并开启匿名登录。
+    </div>
+
+    <!-- 评论区表单 透明黑色线条风格 -->
+    <div class="comment-form-area">
+        <form id="commentForm">
+            <div class="row-flex">
+                <div class="input-group">
+                    <input type="text" id="nicknameInput" placeholder="你的名字 (选填，默认匿名)" maxlength="20" autocomplete="off">
+                </div>
+                <div class="input-group">
+                    <textarea id="contentInput" placeholder="留下你的想法... (黑色线条下，坦诚交流)" rows="2" required></textarea>
+                </div>
+            </div>
+            <button type="submit" id="submitCommentBtn">发布评论 →</button>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px; flex-wrap: wrap;">
+                <div id="loginStatus" class="status-badge">⚡ 正在连接评论服务...</div>
+                <div style="font-size: 0.65rem; color: #1e1e1e; opacity: 0.6;">✨ 透明之境 · 真实回响</div>
+            </div>
+        </form>
+    </div>
+    <div class="footer-tip">
+        🖤 黑色线条框住自由表达 · 所有评论公开可见
+    </div>
+</div>
+
+<!-- 在没有 Firebase 配置或者加载时，优雅降级（保留样式，静态展示提示） -->
+<script type="text/javascript">
+    // 附加纯前端占位: 如果很久没有评论数据，显示提示信息；由于firebase模块会清空并填充，所以配合监听。
+    // 额外监听评论区是否有子节点，避免空白感
+    (function() {
+        const commentsContainer = document.getElementById('commentsList');
+        const observer = new MutationObserver(function(mutations) {
+            mutations.forEach(function(mutation) {
+                if (mutation.type === 'childList') {
+                    if (commentsContainer.children.length === 0 || (commentsContainer.children.length === 1 && commentsContainer.children[0].classList && commentsContainer.children[0].classList.contains('empty-comments'))) {
+                        // 如果没有任何评论项，也没有“加载中”消息，则展示占位
+                        let hasRealComment = false;
+                        for(let i=0; i<commentsContainer.children.length; i++) {
+                            if(commentsContainer.children[i].classList && commentsContainer.children[i].classList.contains('comment-item')) {
+                                hasRealComment = true;
+                                break;
+                            }
+                        }
+                        if (!hasRealComment && commentsContainer.children.length <= 1) {
+                            if(commentsContainer.querySelector('.empty-placeholder')) return;
+                            const emptyDiv = document.createElement('div');
+                            emptyDiv.className = 'empty-comments empty-placeholder';
+                            emptyDiv.innerHTML = '💬 暂无评论，来做第一个留下黑色笔迹的人吧。';
+                            commentsContainer.appendChild(emptyDiv);
+                        } else {
+                            const placeholder = commentsContainer.querySelector('.empty-placeholder');
+                            if(placeholder && hasRealComment) placeholder.remove();
+                        }
+                    } else {
+                        const placeholder = commentsContainer.querySelector('.empty-placeholder');
+                        if(placeholder) placeholder.remove();
+                    }
+                }
+            });
+        });
+        if(commentsContainer) {
+            observer.observe(commentsContainer, { childList: true, subtree: false });
         }
-    </script>
+        // 手动触发一次清理初始加载占位
+        window.addEventListener('load', function() {
+            setTimeout(() => {
+                if(commentsContainer && commentsContainer.children.length === 1 && commentsContainer.children[0].innerText.includes('加载评论中')) {
+                    const emptyDiv = document.createElement('div');
+                    emptyDiv.className = 'empty-comments empty-placeholder';
+                    emptyDiv.innerHTML = '💬 暂无评论，来做第一个留下黑色笔迹的人吧。';
+                    commentsContainer.innerHTML = '';
+                    commentsContainer.appendChild(emptyDiv);
+                }
+            }, 2500);
+        });
+    })();
+</script>
 </body>
 </html>
